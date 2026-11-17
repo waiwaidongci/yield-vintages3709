@@ -5,7 +5,7 @@
 ## 业务场景与工作流
 模拟客户：砚泉研究协作组，12位业务与分析人员。每月研究明细先从`yield-vintages-202611.csv`录入底稿，经口径冻结、Python核算、负责人复核后向业务阅读者交付站内CSV。原有流程依靠人工表格抄算，痛点为口径版本难追溯、重复计算易错、复核与交付脱节。
 
-模块：业务总览、业务底稿、新建口径版本、异步核算与复核、定时交付、站内收件箱、审计。底稿可新增/修改/删除；口径仅新增版本；报告提交时冻结来源与版本并保存SHA256。定时交付引用已复核报告快照，worker到期写入数据库，业务阅读者下载。
+模块：业务总览、业务底稿、新建口径版本、异步核算与复核、定时交付、站内收件箱、清退处置、审计。底稿可新增/修改/删除；口径仅新增版本；报告提交时冻结来源与版本并保存SHA256。定时交付引用已复核报告快照，worker到期写入数据库，业务阅读者下载。误采保密底稿后可按底稿编号清退：先封锁受影响报告与交付的读取/下载，再清除底稿、报告快照与计算结果、交付副本并停用计划；未受影响内容不动，重复提交不扩大范围，中断后续办。
 
 ## 算法口径
 版本化良率分母规则、加权汇总与按线/班次差异归因。分母规则手算；大批小批汇总不能均值；更新规则旧run不变。
@@ -21,6 +21,7 @@
 6. 09:40 admin核对数值后填写至少4字复核说明。
 7. 09:45 admin建立60秒周期计划，worker到期生成站内持久化交付。
 8. 09:46 viewer在站内收件箱下载交付CSV；审计页查看操作者与时间。
+9. 10:00 发现一条误采保密底稿：admin在清退处置页按底稿编号提交清退，页面显示待处理→已封锁→清除底稿→清除报告与计算→清除交付→停用计划→核对完成；受影响报告与交付的旧下载入口随即失效，未受影响报告照常下载。
 
 ## 快速启动
 ```sh
@@ -41,14 +42,33 @@ Python3.11/FastAPI/SQLAlchemy/Redis，MySQL8；前端原生HTML/CSS/JS ES module
 
 后端开发：在backend安装requirements，设置DATABASE_URL/REDIS_URL/JWT_SECRET，`uvicorn src.main:app --reload`；前端可用Nginx或带同等代理的静态开发服务器。前后端全部业务计算在Python。
 
-环境变量：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET（部署替换）、DATABASE_URL、REDIS_URL、SEED_DEMO。`.env`不入Git。数据库/Redis/共享产物为命名卷。共享角色枚举admin/analyst/viewer与状态queued/running/completed/failed分别定义于backend/src/constants/enums.py和frontend/src/constants/enums.js。两个中间件：统一可恢复校验错误、每IP每分钟360请求限流。
+环境变量：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET（部署替换）、DATABASE_URL、REDIS_URL、SEED_DEMO。`.env`不入Git。数据库/Redis/共享产物为命名卷。共享角色枚举admin/analyst/viewer、报告状态queued/running/completed/failed/purged与清退状态pending/running/completed/failed分别定义于backend/src/constants/enums.py和frontend/src/constants/enums.js。两个中间件：统一可恢复校验错误、每IP每分钟360请求限流。
+
+## 清退处置（按底稿编号）
+仅admin可提交`POST /purges {source_ids:[编号], note}`，页面在“清退处置”。流程与保证：
+
+- 提交即在同一事务内封锁：受影响报告置`purged`并清空快照/结果/校验和/复核、相关交付置`purged`并清空payload、计划停用；`GET /runs/{id}`、`GET /runs/{id}/csv`、`GET /deliveries/{id}/csv`、计划切换与复核一律返回410。封锁先于清除，封锁后即使清除中断也不恢复读取。
+- 随后幂等分阶段执行（清除底稿→报告快照/结果/校验和/复核→交付payload→计划），全部副本清除且旧入口均失效后才标`completed`；任何阶段失败标`failed`并记录失败原因，可“续办”。worker每次轮询与后端启动都会续办`pending`或超时的`running`任务。
+- 与核算/复核/定时交付并发：底稿提交快照用共享锁、清退用排他锁；worker发布结果前在加锁事务内复查墓碑，迟到的排队/运行报告不会写回结果；定时交付先锁报告再写副本，清退后不会再生成新副本。
+- 范围只按底稿编号：新报告快照保存`source_refs`精确编号；旧快照以`source_fingerprints`内容哈希匹配。同内容的其它底稿、未引用该底稿的报告与交付保持可读。
+- 重复提交相同编号返回原任务，不扩大范围；不同编号是另一任务。
+- 页面展示每条任务的底稿编号、影响范围、当前步骤时间线与失败原因。
 
 ## 已知边界
 定时分发为站内收件箱；一名worker轮询执行，无外部邮件。调度发送已复核固定报告快照，不自动重算新数据。时间显示Asia/Shanghai。报告导出适合小型数据；底稿全量加载240行演示数据。Google Fonts不可用时回退serif。后端API以专属字段对象收发，页面通过业务输入控件编辑，不要求用户写JSON。新增来源期间自动可选；专属字段和算法严格校验。JWT演示有效期2小时。
 
-MIT License。
-
 ## 实际实体映射
 来源记录（Source，专属业务字段校验）、口径版本（Policy）、核算报告（Run）、交付计划（Schedule）、交付（Delivery）均经数据库→模型→请求schema→service→route/controller→frontend API→store→page。Period为已有来源期间字典，在任务期间选择器使用；不单独作为复杂度计数。底稿JSON为小型多字段单记录存储，不虚构未落库的子实体。
 
-实际表：期间字典 yield_periods；专属来源 yield_lots；冻结口径 denominator_policies；异步报告 yield_runs。
+实际表：期间字典 yield_periods；专属来源 yield_lots（内容版本指纹 source_fingerprints）；冻结口径 denominator_policies；异步报告 yield_runs；交付计划 delivery_schedules；交付 deliveries；清退任务 purge_jobs。升级说明见backend/migrations/002_purge.md。
+
+## 测试
+清退相关回归（无需容器，使用SQLite）：在backend安装pytest与httpx后执行
+
+```sh
+cd backend && PYTHONPATH=. python -m pytest tests
+```
+
+覆盖：提交即封锁、旧入口410、未受影响报告可读、同内容不同底稿不误删、旧快照按哈希匹配、重复提交幂等、新增范围另立任务、中断续办、失败原因与重试、排队/运行中迟到完成不恢复泄露、定时交付不再生成副本。
+
+MIT License。

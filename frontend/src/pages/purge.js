@@ -1,0 +1,11 @@
+import {heading} from '../components/common/header.js';import {esc,time} from '../utils/format.js';import {PURGE_STATUSES} from '../constants/enums.js';
+const STEPS=[['created','待处理'],['blocked','已封锁读取与下载'],['sources','清除底稿'],['runs','清除报告快照与计算结果'],['deliveries','清除交付副本'],['schedules','停用交付计划'],['verify','核对副本与旧入口']];
+const idList=ids=>ids&&ids.length?ids.join('、'):'—';
+const stepIndex=step=>Math.max(0,STEPS.findIndex(([value])=>value===step));
+const progress=j=>STEPS.map(([value,label],index)=>{const current=value===j.step&&j.status!=='completed';const done=j.status==='completed'||index<stepIndex(j.step);const failed=current&&j.status==='failed';return `<span class="purge-step ${done?'done':''} ${current?'current':''} ${failed?'failed':''}">${esc(label)}</span>`}).join('');
+export function purge(c,d){
+ const jobs=d.purges||[];
+ const active=jobs.filter(j=>j.status!=='completed');
+ const form=`<form id="purge-form" class="purge-form"><label>底稿编号（可多选，逗号分隔）<input name="source_ids" placeholder="例如 12,13" required></label><label>清退说明<input name="note" placeholder="误采保密底稿，按编号清退" maxlength="500"></label><button>按编号清退</button></form>`;
+ const list=jobs.length?`<div class="purge-list">${jobs.map(j=>`<article class="purge-job"><header><h3>清退 #${j.id}</h3><span class="status ${esc(j.status)}">${esc(PURGE_STATUSES[j.status]||j.status)}</span></header><p>底稿编号：${esc(idList(j.source_ids))}</p><p>影响范围：报告 ${esc(idList(j.scope.run_ids))} · 交付 ${esc(idList(j.scope.delivery_ids))} · 计划 ${esc(idList(j.scope.schedule_ids))}</p><p>当前步骤：${esc(j.step_label)}${j.error?'<br>失败原因：'+esc(j.error):''}</p><div class="purge-steps">${progress(j)}</div><p><small>创建 ${time(j.created)} · 更新 ${time(j.updated)}${j.completed?' · 完成 '+time(j.completed):''}</small></p>${j.note?'<p>说明：'+esc(j.note)+'</p>':''}${j.status==='failed'?`<button class="purge-retry" data-id="${j.id}">续办</button>`:''}</article>`).join('')}</div>`:'<p class="empty">暂无清退任务。按底稿编号清退后，受影响报告、交付计划与站内交付副本会先封锁再清除。</p>';
+ return heading('PURGE REGISTER / 06','按底稿编号清退','误采保密底稿时，按底稿编号一次性封锁并清除报告与交付副本；未受影响内容不删除，重复提交不扩大范围，中断后可续办。')+form+`<p class="method">清退与核算、复核、定时交付可并发：受影响报告与交付立即拒绝读取和下载；排队或运行中的报告迟到完成也不会恢复泄露。全部副本清除且旧入口失效后才标“已完成”。</p><h2>待处理 ${active.length} · 全部 ${jobs.length}</h2>`+list}

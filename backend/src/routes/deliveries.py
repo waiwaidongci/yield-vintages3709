@@ -6,21 +6,24 @@ from src.models.run import Schedule,Delivery
 from src.schemas.requests import ScheduleInput
 from src.services.delivery import add_schedule
 from src.services.export import csv_text
+from src.services.purge import safe_schedule
 from src.utils.serialize import row
 router=APIRouter()
 @router.get('/schedules')
-def schedules(db=Depends(database),u=Depends(current)): return [row(x) for x in db.query(Schedule).all()]
+def schedules(db=Depends(database),u=Depends(current)): return [safe_schedule(x) for x in db.query(Schedule).all()]
 @router.post('/schedules')
 def create(b:ScheduleInput,db=Depends(database),u=Depends(admin)): return row(add_schedule(db,u,b))
 @router.post('/schedules/{id}/toggle')
 def toggle(id:int,db=Depends(database),u=Depends(admin)):
  obj=db.get(Schedule,id)
  if not obj: raise HTTPException(404,'计划不存在')
+ if obj.purged: raise HTTPException(410,'计划已随报告清退，旧入口失效')
  obj.enabled=not obj.enabled;db.commit();return row(obj)
 @router.get('/deliveries')
-def deliveries(db=Depends(database),u=Depends(current)): return [row(x) for x in db.query(Delivery).order_by(Delivery.id.desc()).limit(100).all()]
+def deliveries(db=Depends(database),u=Depends(current)): return [row(x) for x in db.query(Delivery).filter(Delivery.purged==False).order_by(Delivery.id.desc()).limit(100).all()]
 @router.get('/deliveries/{id}/csv')
 def download(id:int,db=Depends(database),u=Depends(current)):
  obj=db.get(Delivery,id)
+ if obj and obj.purged: raise HTTPException(410,'交付已清退，旧入口失效')
  if not obj: raise HTTPException(404,'交付不存在')
  return Response(csv_text(obj.payload['result']),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename="delivery-{id}.csv"'})
